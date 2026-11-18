@@ -136,6 +136,11 @@ class AscendDSAV41Metadata(AttentionMetadata):
     ori_mask_mode: int = 4
     ori_win_left: int = 0
     ori_win_right: int = 0
+    # Decoder SWA Bounded Replay: INT32 [num_reqs] device tensor holding the
+    # per-request absolute lower bound on the sliding window. Consumed only by
+    # layers whose role.is_swa_replay_consumer is True; None disables it and
+    # the operator then behaves exactly as before.
+    swa_replay_start: torch.Tensor | None = None
     smla_metadata: torch.Tensor | None = None
     qli_metadata: torch.Tensor | None = None
     cmp_residual: torch.Tensor | None = None
@@ -669,6 +674,9 @@ class AscendDSAV41Impl:
             cmp_residual_kv=cmp_residual,
             sinks=attn.attn_sink,
             metadata=op_metadata,
+            # Only the CED decoder half replays a bounded tail. Encoder layers
+            # pass None and keep the unmodified scalar band.
+            ori_win_floor=(metadata.swa.swa_replay_start if self.role.is_swa_replay_consumer else None),
             softmax_scale=attn.softmax_scale,
             cmp_ratio=ratio,
             ori_mask_mode=metadata.swa.ori_mask_mode,
@@ -913,6 +921,15 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
         positions = common.positions
         if positions is not None:
             positions = positions[:num_input_tokens].long()
+        # The floor arrives as a CPU int32 tensor built from num_prompt_tokens;
+        # the operator needs it on device. Prefill runs eager on A3, so a small
+        # per-step [num_reqs] copy is acceptable here. Revisit if this ever has
+        # to live inside a captured graph, where the address must be stable.
+        swa_replay_start = getattr(common, "swa_replay_start", None)
+        if swa_replay_start is not None:
+            swa_replay_start = swa_replay_start[:num_reqs].to(
+                self._seq_lens.device, dtype=torch.int32, non_blocking=True
+            )
         return dict(
             query_start_loc=common.query_start_loc[: num_reqs + 1],
             query_start_loc_cpu=getattr(common, "query_start_loc_cpu", None),
@@ -924,6 +941,7 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
             num_decode_tokens=num_decode_tokens,
             num_prefills=num_prefills,
             num_prefill_tokens=num_prefill_tokens,
+            swa_replay_start=swa_replay_start,
         )
 
     def build(

@@ -306,6 +306,12 @@ class AscendCommonAttentionMetadata(CommonAttentionMetadata):
     copy_sfa_draft_index: int | None = None
     copy_sfa_restore_tails: bool = False
     offload_dummy: bool = False
+    # DeepSeek-V4.1 Decoder SWA Bounded Replay: per-request absolute lower
+    # bound on the decoder half's sliding window, i.e.
+    # max(0, num_prompt_tokens - keep_tokens). INT32 [num_reqs], device-side.
+    # Anchored on the FULL prompt length, so it is chunk-independent and
+    # needs no "is this the last chunk" flag. None when the feature is off.
+    swa_replay_start: torch.Tensor | None = None
 
     # vLLM main (#55353) removed the deprecated
     # CommonAttentionMetadata._seq_lens_cpu / _num_computed_tokens_cpu
@@ -372,6 +378,7 @@ class AscendCommonAttentionMetadata(CommonAttentionMetadata):
             group_key_cache_idx=self.group_key_cache_idx,
             req_topk_buffer_slots=_slice_reqs(self.req_topk_buffer_slots),
             req_topk_buffer_active=_slice_reqs(self.req_topk_buffer_active),
+            swa_replay_start=_slice_reqs(self.swa_replay_start),
             copy_sfa_draft_index=self.copy_sfa_draft_index,
             offload_dummy=self.offload_dummy,
             req_ids_tensor=_slice_reqs(self.req_ids_tensor),

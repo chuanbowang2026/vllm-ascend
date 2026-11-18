@@ -3598,6 +3598,7 @@ class NPUModelRunner(GPUModelRunner):
                 torch.from_numpy(dcp_dummy_metadata.num_computed_tokens_cpu)
             )
             is_prefilling = torch.zeros_like(num_computed_tokens_cpu, dtype=torch.bool)
+            swa_replay_start_cpu = None
         else:
             num_computed_tokens_cpu = self.input_batch.num_computed_tokens_cpu_tensor[
                 :num_reqs_padded
@@ -3607,6 +3608,15 @@ class NPUModelRunner(GPUModelRunner):
             ]
             is_prefilling = num_computed_tokens_cpu < num_prompt_tokens_cpu
             is_prefilling[num_reqs:] = False
+            # Decoder SWA Bounded Replay floor. Anchored on the FULL prompt
+            # length, which is chunk-independent, so no "last chunk" flag is
+            # needed: a chunk that ends below the floor simply has every row
+            # clamped by the kernel's Min(floor, mask_right).
+            swa_replay_start_cpu = None
+            if self.ascend_config.enable_decoder_swa_bounded_replay:
+                keep = self.ascend_config.decoder_swa_replay_keep_tokens
+                swa_replay_start_cpu = (num_prompt_tokens_cpu - keep).clamp_min(0).to(torch.int32)
+                swa_replay_start_cpu[num_reqs:] = 0
         seq_lens_cpu = self.optimistic_seq_lens_cpu[:num_reqs_padded]
         if self.use_async_spec_decode:
             # GPU tensors are authoritative in async mode.
@@ -3675,6 +3685,7 @@ class NPUModelRunner(GPUModelRunner):
             slot_mapping=slot_mapping_gid_0,
             causal=True,
             is_prefilling=is_prefilling,
+            swa_replay_start=swa_replay_start_cpu,
             num_input_tokens=num_tokens_padded,
             actual_seq_lengths_q=self.actual_seq_lengths_q,
             positions=self.positions,
