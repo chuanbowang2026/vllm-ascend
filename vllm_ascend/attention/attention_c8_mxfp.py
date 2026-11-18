@@ -47,6 +47,7 @@ from vllm_ascend.attention.utils import enable_dcp, enable_pcp, notify_kv_cache_
 from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.attention_fence import (
     record_attention_compute_start,
 )
+from vllm_ascend.ops.triton.scatter_mxfp_k_scale import scatter_mxfp_k_scale_cache_triton
 from vllm_ascend.utils import uses_mooncake_connector
 
 if TYPE_CHECKING:
@@ -366,10 +367,24 @@ def scatter_mxfp_k_scale_cache(
     Padded rows arrive clamped to slot 0 and are simply written there: slot 0
     belongs to block 0, the null block BlockPool never hands to a request, so
     only dummy padding requests (whose output is discarded) read it back.
+
+    The Triton kernel computes each destination address directly. The eager
+    assignment below is kept as the fallback for layouts whose trailing byte
+    pair cannot be bitcast to 16 bits; it broadcasts the three advanced
+    indices into a leading axis, materialises a permuted intermediate and
+    hands the write to IndexPutV2, which is far slower and leaves AICore
+    entirely on float8 inputs.
     """
     block_ids, seg_ids, frag_ids = slot_index
     if block_ids.numel() == 0:
         return
+    try:
+        scatter_mxfp_k_scale_cache_triton(key_scale, key_scale_cache, block_ids, seg_ids, frag_ids)
+        return
+    except ValueError:
+        # Layout cannot be bitcast; every other failure is a real error and
+        # must propagate rather than silently cost throughput.
+        pass
     key_scale_cache[block_ids, :, seg_ids, :, frag_ids, :] = key_scale
 
 
