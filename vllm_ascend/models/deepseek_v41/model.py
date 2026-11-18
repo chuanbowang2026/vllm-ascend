@@ -459,6 +459,10 @@ class DeepseekV41LayerRole:
     is_candidate_source: bool
     uses_candidate_filter: bool
     engram_slot: int | None
+    # Layers at or above the CED boundary take their global KV from the
+    # boundary layer instead of projecting their own, so prefill only has to
+    # run them over a bounded replay window. See DeepseekV41Topology.
+    is_swa_replay_consumer: bool = False
 
     @property
     def has_long_context(self) -> bool:
@@ -476,6 +480,10 @@ class DeepseekV41Topology:
     candidate_topk_blocks: int
     candidate_block_size: int
     index_topk: int
+    # First layer of the CED decoder half. Its own compressed KV feeds every
+    # later layer, so prefill must compute layers [0, boundary] for every
+    # prompt token but may restrict (boundary, num_layers) to a replay tail.
+    boundary_layer_idx: int = -1
 
     def layer(self, layer_idx: int) -> DeepseekV41LayerRole:
         return self.layers[layer_idx]
@@ -527,6 +535,19 @@ def build_layer_plan(config: Any) -> DeepseekV41Topology:
 
     ratios = ratios[:num_layers]
 
+    # CED boundary: the last KV source owns the global KV that every later
+    # layer reads, so no layer above it projects its own. Two independent
+    # derivations must agree -- the last kv source, and the first ratio-1
+    # layer (DeepInfer's n_prefill_layer). Disagreement means the checkpoint
+    # topology is not the CED shape this plan assumes, so refuse to guess.
+    boundary_layer_idx = max(kv_sources) if kv_sources else -1
+    first_unit_ratio = next((idx for idx, ratio in enumerate(ratios) if ratio == 1), None)
+    if boundary_layer_idx >= 0 and first_unit_ratio is not None and first_unit_ratio != boundary_layer_idx:
+        raise ValueError(
+            "DeepSeek-V4.1 CED boundary is ambiguous: last kv_source_layer_id is "
+            f"{boundary_layer_idx} but the first compress_ratio==1 layer is {first_unit_ratio}."
+        )
+
     engram_slots = {layer_idx: slot for slot, layer_idx in enumerate(engram_layers)}
     roles: list[DeepseekV41LayerRole] = []
     for layer_idx, ratio in enumerate(ratios):
@@ -547,6 +568,7 @@ def build_layer_plan(config: Any) -> DeepseekV41Topology:
                 # TopK was computed inside layer 20's candidate blocks.
                 uses_candidate_filter=index_source is not None and index_source > candidate_source,
                 engram_slot=engram_slots.get(layer_idx),
+                is_swa_replay_consumer=boundary_layer_idx >= 0 and layer_idx >= boundary_layer_idx,
             )
         )
 
@@ -558,6 +580,7 @@ def build_layer_plan(config: Any) -> DeepseekV41Topology:
         candidate_topk_blocks=candidate_topk_blocks,
         candidate_block_size=candidate_block_size,
         index_topk=index_topk,
+        boundary_layer_idx=boundary_layer_idx,
     )
 
 
