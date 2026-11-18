@@ -58,7 +58,8 @@ using namespace SMLAKernel;
         const tilingdataClass *__restrict tiling_data = &tiling_data_in; \
         op.Init(query, oriKV, cmpKV, oriSparseIndices, cmpSparseIndices, oriBlockTable, cmpBlockTable, cuSeqlensQ, \
                 cuSeqlensOriKv, cuSeqlensCmpKv, seqUsedQ, seqUsedOriKV, seqUsedCmpKV, cmpResidualKV, oriTopkLength, \
-                cmpTopkLength, sinks, metadata, attentionOut, softmaxLse, user, tiling_data, tiling, &tPipe); \
+                cmpTopkLength, sinks, metadata, oriWinFloor, attentionOut, softmaxLse, user, tiling_data, tiling, \
+                &tPipe); \
         op.Process(); \
     } while (0)
 #endif
@@ -71,12 +72,15 @@ __global__ __aicore__ void sparse_flash_mla(
     __gm__ uint8_t *cuSeqlensQ, __gm__ uint8_t *cuSeqlensOriKv, __gm__ uint8_t *cuSeqlensCmpKv,
     __gm__ uint8_t *seqUsedQ, __gm__ uint8_t *seqUsedOriKV, __gm__ uint8_t *seqUsedCmpKV, __gm__ uint8_t *cmpResidualKV,
     __gm__ uint8_t *oriTopkLength, __gm__ uint8_t *cmpTopkLength, __gm__ uint8_t *sinks, __gm__ uint8_t *metadata,
-    __gm__ uint8_t *attentionOut, __gm__ uint8_t *softmaxLse, __gm__ uint8_t *workspace, __gm__ uint8_t *tiling)
+    __gm__ uint8_t *oriWinFloor, __gm__ uint8_t *attentionOut, __gm__ uint8_t *softmaxLse, __gm__ uint8_t *workspace,
+    __gm__ uint8_t *tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
     __gm__ uint8_t *user = GetUserWorkspace(workspace);
 
 #if (__CCE_AICORE__ == 310)
+    // A5(arch35) 不消费 ori_win_floor, 主机侧已拒绝非空张量
+    (void)oriWinFloor;
     if constexpr (ORIG_DTYPE_Q == DT_FLOAT16 && ORIG_DTYPE_ORI_KV == DT_FLOAT16 && ORIG_DTYPE_ATTN_OUT == DT_FLOAT16) {
         if constexpr (TEMPLATE_MODE == CSA_TEMPLATE || TEMPLATE_MODE == ORI_SPARSE_TEMPLATE ||
                       TEMPLATE_MODE == ORI_CMP_SPARSE_TEMPLATE) {

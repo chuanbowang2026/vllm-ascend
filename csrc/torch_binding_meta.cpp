@@ -341,6 +341,7 @@ std::tuple<at::Tensor, at::Tensor> npu_sparse_flash_mla_meta(
     const c10::optional<at::Tensor> &cmp_topk_length,
     const c10::optional<at::Tensor> &sinks,
     const c10::optional<at::Tensor> &metadata,
+    const c10::optional<at::Tensor> &ori_win_floor,
     double softmax_scale, int64_t cmp_ratio, int64_t ori_mask_mode,
     int64_t cmp_mask_mode, int64_t ori_win_left, int64_t ori_win_right,
     c10::string_view layout_q, c10::string_view layout_kv,

@@ -78,6 +78,22 @@ def _ensure_sinks(kwargs: dict[str, Any]) -> None:
         )
 
 
+def _reject_ori_win_floor(kwargs: dict[str, Any]) -> None:
+    """Reject ori_win_floor, which this operator does not accept.
+
+    ``ori_win_floor`` (Decoder SWA Bounded Replay) is an input of the in-tree
+    custom operator ``torch.ops._C_ascend.npu_sparse_flash_mla``. The operator
+    reached from here is the SparseFlashMla shipped in ``cann_ops_transformer``
+    and its schema has no such argument, so forwarding it would raise an opaque
+    TypeError from the dispatcher instead of naming the unsupported option.
+    """
+    if kwargs.pop("ori_win_floor", None) is not None:
+        raise ValueError(
+            "ori_win_floor is only supported by torch.ops._C_ascend.npu_sparse_flash_mla; "
+            "the cann_ops_transformer SparseFlashMla operator does not accept it."
+        )
+
+
 def sparse_flash_mla(q: torch.Tensor, **kwargs):
     """Adapt existing DSA attention kwargs to SparseFlashMla BF16 KV."""
     kwargs.pop("kv_quant_mode", None)
@@ -89,5 +105,6 @@ def sparse_flash_mla(q: torch.Tensor, **kwargs):
     _drop_paged_kv_cu_seqlens(kwargs)
     _add_compressed_kv_lengths(kwargs)
     _ensure_sinks(kwargs)
+    _reject_ori_win_floor(kwargs)
     attention_op, _ = _get_sparse_flash_mla_ops()
     return attention_op(q, **kwargs)

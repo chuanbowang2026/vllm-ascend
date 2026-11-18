@@ -80,6 +80,7 @@ constexpr uint32_t ORI_TOPK_LENGTH_INDEX = 14;
 constexpr uint32_t CMP_TOPK_LENGTH_INDEX = 15;
 constexpr uint32_t SINKS_INDEX = 16;
 constexpr uint32_t METADATA_INDEX = 17;
+constexpr uint32_t ORI_WIN_FLOOR_INDEX = 18;
 // Outputs Index
 constexpr uint32_t ATTN_OUT_INDEX = 0;
 constexpr uint32_t SOFTMAX_LSE_INDEX = 1;
@@ -154,6 +155,7 @@ TILING_DATA_FIELD_DEF(uint32_t, kvHeadNum)
 TILING_DATA_FIELD_DEF(uint32_t, oriKeyStride0) // A5
 TILING_DATA_FIELD_DEF(uint32_t, hasOriSparseIndices)
 TILING_DATA_FIELD_DEF(uint32_t, oriSparseIndexWidth)
+TILING_DATA_FIELD_DEF(uint32_t, oriWinFloorDims)
 END_TILING_DATA_DEF
 REGISTER_TILING_DATA_CLASS(SparseFlashMlaSwaParamsOp, SparseFlashMlaSwaParams)
 
@@ -195,6 +197,7 @@ struct SMLAParaInfo {
     SMLATilingOptionalParaInfo cmpTopkLength = {nullptr, nullptr};
     SMLATilingOptionalParaInfo sinks = {nullptr, nullptr};
     SMLATilingOptionalParaInfo metadata = {nullptr, nullptr};
+    SMLATilingOptionalParaInfo oriWinFloor = {nullptr, nullptr};
     SMLATilingRequiredParaInfo attnOut = {nullptr, nullptr};
     SMLATilingRequiredParaInfo softmaxLse = {nullptr, nullptr};
 
@@ -240,6 +243,7 @@ public:
     uint32_t actualLenDimsOriKV = 0;
     uint32_t actualLenDimsCmpKV = 0;
     uint32_t cmpResidualKVSize = 0;
+    uint32_t oriWinFloorDims = 0; // ori_win_floor的元素个数, 0表示未传入
 
     uint32_t oriKeyStride0 = 0; // A5
     uint32_t cmpKeyStride0 = 0; // A5
@@ -497,6 +501,7 @@ public:
     uint32_t actualLenDimsOriKV_ = 0;
     uint32_t actualLenDimsCmpKV_ = 0;
     uint32_t cmpResidualKVSize_ = 0;
+    uint32_t oriWinFloorDims_ = 0;
 
     std::vector<uint32_t> oriKeyStridesVec_; // A5
     std::vector<uint32_t> cmpKeyStridesVec_; // A5

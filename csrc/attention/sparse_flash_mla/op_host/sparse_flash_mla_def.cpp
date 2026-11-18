@@ -111,6 +111,13 @@ public:
             .DataTypeList({ge::DT_INT32})
             .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
+        // Decoder SWA Bounded Replay: 每个请求一个绝对下界, shape [B]。
+        // 必须追加在输入列表末尾, 以免改动既有输入索引。
+        this->Input("ori_win_floor")
+            .ParamType(OPTIONAL)
+            .DataTypeList({ge::DT_INT32})
+            .FormatList({ge::FORMAT_ND})
+            .AutoContiguous();
         this->Output("attn_out")
             .ParamType(REQUIRED)
             .DataType({ge::DT_BF16})

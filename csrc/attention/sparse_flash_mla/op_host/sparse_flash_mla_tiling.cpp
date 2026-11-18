@@ -46,6 +46,7 @@ static const std::string SEQUSED_CMP_KV_NAME = "seqused_cmp_kv";
 static const std::string CMP_RESIDUAL_KV_NAME = "cmp_residual_kv";
 static const std::string ORI_TOPK_LENGTH_NAME = "ori_topk_length";
 static const std::string CMP_TOPK_LENGTH_NAME = "cmp_topk_length";
+static const std::string ORI_WIN_FLOOR_NAME = "ori_win_floor";
 static const std::string A2_A3_PLATFORM_LOG = "A2/A3";
 static const std::string A5_PLATFORM_LOG = "A5";
 constexpr uint32_t FD_MAX_S2_SPLIT_NUM = 2U;
@@ -119,7 +120,8 @@ static const std::map<std::string, std::vector<ge::DataType>> DTYPE_SUPPORT_MAP 
     {SEQUSED_CMP_KV_NAME, {ge::DT_INT32}},
     {CMP_RESIDUAL_KV_NAME, {ge::DT_INT32}},
     {ORI_TOPK_LENGTH_NAME, {ge::DT_INT32}},
-    {CMP_TOPK_LENGTH_NAME, {ge::DT_INT32}}};
+    {CMP_TOPK_LENGTH_NAME, {ge::DT_INT32}},
+    {ORI_WIN_FLOOR_NAME, {ge::DT_INT32}}};
 
 static const std::map<std::string, std::vector<SMLALayout>> LAYOUT_SUPPORT_MAP = {
     {QUERY_NAME, {SMLALayout::BSND, SMLALayout::TND}},
@@ -414,6 +416,7 @@ void SMLAInfoParser::GetOptionalInputParaInfo()
     sparse_mla_checker::PopulateOptionalTensorParam(context_, ORI_TOPK_LENGTH_INDEX, opParamInfo_.oriTopkLength);
     sparse_mla_checker::PopulateOptionalTensorParam(context_, CMP_TOPK_LENGTH_INDEX, opParamInfo_.cmpTopkLength);
     sparse_mla_checker::PopulateOptionalTensorParam(context_, METADATA_INDEX, opParamInfo_.metadata);
+    sparse_mla_checker::PopulateOptionalTensorParam(context_, ORI_WIN_FLOOR_INDEX, opParamInfo_.oriWinFloor);
 }
 
 void SMLAInfoParser::GetInputParaInfo()
@@ -1022,6 +1025,14 @@ ge::graphStatus SMLAInfoParser::GetActualseqInfo()
                 A2_A3_PLATFORM_LOG.c_str());
         return ge::GRAPH_FAILED;
     }
+    // ori_win_floor 仅 A2/A3 的 arch22 kernel 消费, A5 路径必须保持不变
+    if (IsA5Arch(npuArch_) && IsNonEmptyOptionalTensor(opParamInfo_.oriWinFloor.tensor)) {
+        OP_LOGE(opName_, "ori_win_floor does not support non-empty tensor on %s.", A5_PLATFORM_LOG.c_str());
+        return ge::GRAPH_FAILED;
+    }
+    oriWinFloorDims_ = IsNonEmptyOptionalTensor(opParamInfo_.oriWinFloor.tensor) ?
+                           static_cast<uint32_t>(opParamInfo_.oriWinFloor.tensor->GetShapeSize()) :
+                           0U;
     if (kvLayout_ == SMLALayout::PA_BBND) {
         if (opParamInfo_.sequsedOriKv.tensor != nullptr) {
             if (qLayout_ == SMLALayout::BSND) {
@@ -1119,6 +1130,7 @@ void SMLAInfoParser::GenerateInfo(SMLATilingInfo &smlaInfo)
     smlaInfo.actualLenDimsOriKV = actualLenDimsOriKV_;
     smlaInfo.actualLenDimsCmpKV = actualLenDimsCmpKV_;
     smlaInfo.cmpResidualKVSize = cmpResidualKVSize_;
+    smlaInfo.oriWinFloorDims = oriWinFloorDims_;
 
     if (!IsA5Arch(npuArch_)) {
         smlaInfo.oriKeyStride0 = 0;
@@ -2241,6 +2253,21 @@ ge::graphStatus SMLATilingCheck::CheckActualSeqLens() const
                     ") should be equal to B(" + std::to_string(bSize_) + ")"),
             return ge::GRAPH_FAILED);
     }
+    if (opParamInfo_.oriWinFloor.tensor != nullptr) {
+        const std::vector<size_t> dimNumList = {DIM_NUM_ONE};
+        if (ge::GRAPH_SUCCESS != CheckDtypeSupport(opParamInfo_.oriWinFloor.desc, ORI_WIN_FLOOR_NAME) ||
+            ge::GRAPH_SUCCESS !=
+                CheckDimNumSupport(&opParamInfo_.oriWinFloor.tensor->GetShape(), dimNumList, ORI_WIN_FLOOR_NAME)) {
+            return ge::GRAPH_FAILED;
+        }
+        OP_CHECK_IF(
+            opParamInfo_.oriWinFloor.tensor->GetShapeSize() != bSize_,
+            OP_LOGE_FOR_INVALID_SHAPE_WITH_REASON(
+                opName_, "ori_win_floor", ToStringRaw(opParamInfo_.oriWinFloor.tensor->GetStorageShape()),
+                "Ori_win_floor's first dimension(" + std::to_string(opParamInfo_.oriWinFloor.tensor->GetShapeSize()) +
+                    ") should be equal to B(" + std::to_string(bSize_) + ")"),
+            return ge::GRAPH_FAILED);
+    }
     return ge::GRAPH_SUCCESS;
 }
 ge::graphStatus SMLATilingCheck::CheckMultiParaConsistency()
@@ -2459,6 +2486,7 @@ ge::graphStatus SparseFlashMlaTiling::DoOpTiling(SMLATilingInfo *tilingInfo)
     tilingData_.baseParams.set_actualLenDimsOriKV(tilingInfo->actualLenDimsOriKV);
     tilingData_.baseParams.set_actualLenDimsCmpKV(tilingInfo->actualLenDimsCmpKV);
     tilingData_.baseParams.set_cmpResidualKVSize(tilingInfo->cmpResidualKVSize);
+    tilingData_.baseParams.set_oriWinFloorDims(tilingInfo->oriWinFloorDims);
     tilingData_.baseParams.set_oriKeyStride0(tilingInfo->oriKeyStride0);
     tilingData_.baseParams.set_hasOriSparseIndices(tilingInfo->hasOriSparseIndices ? 1U : 0U);
     tilingData_.baseParams.set_oriSparseIndexWidth(tilingInfo->oriSparseIndexWidth);

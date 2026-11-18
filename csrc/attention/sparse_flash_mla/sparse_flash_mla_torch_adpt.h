@@ -154,7 +154,8 @@ std::tuple<at::Tensor, at::Tensor> npu_sparse_flash_mla(
     const c10::optional<at::Tensor> &sequsedOriKv, const c10::optional<at::Tensor> &sequsedCmpKv,
     const c10::optional<at::Tensor> &cmpResidualKv, const c10::optional<at::Tensor> &oriTopkLength,
     const c10::optional<at::Tensor> &cmpTopkLength, const c10::optional<at::Tensor> &sinks,
-    const c10::optional<at::Tensor> &metadata, double softmaxScale, int64_t cmpRatio, int64_t oriMaskMode,
+    const c10::optional<at::Tensor> &metadata, const c10::optional<at::Tensor> &oriWinFloor, double softmaxScale,
+    int64_t cmpRatio, int64_t oriMaskMode,
     int64_t cmpMaskMode, int64_t oriWinLeft, int64_t oriWinRight, c10::string_view layoutQ, c10::string_view layoutKv,
     int64_t topkValueMode, bool returnSoftmaxLse)
 {
@@ -172,8 +173,9 @@ std::tuple<at::Tensor, at::Tensor> npu_sparse_flash_mla(
 
     EXEC_NPU_CMD(aclnnSparseFlashMla, q, oriKv, cmpKv, oriSparseIndices, cmpSparseIndices, oriBlockTable, cmpBlockTable,
               cuSeqlensQ, cuSeqlensOriKv, cuSeqlensCmpKv, sequsedQ, sequsedOriKv, sequsedCmpKv, cmpResidualKv,
-              oriTopkLength, cmpTopkLength, sinks, metadata, softmaxScale, cmpRatio, oriMaskMode, cmpMaskMode,
-              oriWinLeft, oriWinRight, layoutQPtr, layoutKvPtr, topkValueMode, returnSoftmaxLse, attenOut, softmaxLse);
+              oriTopkLength, cmpTopkLength, sinks, metadata, oriWinFloor, softmaxScale, cmpRatio, oriMaskMode,
+              cmpMaskMode, oriWinLeft, oriWinRight, layoutQPtr, layoutKvPtr, topkValueMode, returnSoftmaxLse, attenOut,
+              softmaxLse);
     return std::tuple<at::Tensor, at::Tensor>(attenOut, softmaxLse);
 }
 

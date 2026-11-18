@@ -349,7 +349,7 @@ int main()
       cuSeqLensQ, nullptr, nullptr,
       nullptr, seqUsedOriKv,
       seqUsedCmpKv, cmpResidualKv, nullptr, nullptr,
-      sinks, metadata,
+      sinks, metadata, nullptr,
       softmaxScale, cmpRatio,
       oriMaskMode, cmpMaskMode,
       oriWinLeft, oriWinRight,

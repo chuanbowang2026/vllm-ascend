@@ -361,6 +361,7 @@ struct ConstInfo {
     // win
     int32_t oriWinRight = 0;
     int32_t oriWinLeft = 128;
+    uint32_t oriWinFloorDims = 0U; // ori_win_floor的元素个数, 0表示未传入
 
     bool returnSoftmaxLse = false;
 };

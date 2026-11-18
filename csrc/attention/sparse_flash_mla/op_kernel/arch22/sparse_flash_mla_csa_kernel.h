@@ -90,7 +90,8 @@ public:
                                 __gm__ uint8_t *seqUsedQ, __gm__ uint8_t *seqUsedKV, __gm__ uint8_t *seqUsedCmpKV,
                                 __gm__ uint8_t *cmpResidualKV, __gm__ uint8_t *oriTopkLength,
                                 __gm__ uint8_t *cmpTopkLength, __gm__ uint8_t *sinks, __gm__ uint8_t *metadata,
-                                __gm__ uint8_t *attentionOut, __gm__ uint8_t *softmaxLse, __gm__ uint8_t *workspace,
+                                __gm__ uint8_t *oriWinFloor, __gm__ uint8_t *attentionOut,
+                                __gm__ uint8_t *softmaxLse, __gm__ uint8_t *workspace,
                                 const SparseFlashMlaTilingData *__restrict tiling, __gm__ uint8_t *gmTiling,
                                 TPipe *tPipe);
 
@@ -152,6 +153,7 @@ private:
     GlobalTensor<int32_t> actualSeqLengthsKVGm;
     GlobalTensor<int32_t> actualSeqLengthsCmpKVGm;
     GlobalTensor<int32_t> cmpResidualKVGm;
+    GlobalTensor<int32_t> oriWinFloorGm;
 
     // workspace
     GlobalTensor<MM1_OUT_T> mm1ResGm;
@@ -184,6 +186,7 @@ private:
     __aicore__ inline int32_t GetActualSeqLenQ(uint32_t bIdx);
     __aicore__ inline int32_t GetActualSeqLenKV(uint32_t bIdx);
     __aicore__ inline int32_t GetActualSeqLenCmpKV(uint32_t bIdx, int32_t actualOriS2Size);
+    __aicore__ inline int32_t GetOriWinFloor(uint32_t bIdx, int32_t oriMaskRight);
     __aicore__ inline int32_t GetCmpMaskS2Size(uint32_t bIdx, int32_t actualOriS2Size, int32_t actualCmpS2Size);
     __aicore__ inline void GetBN2Idx(uint32_t bN2Idx, uint32_t &bIdx, uint32_t &n2Idx);
     // ================================Mm1==============================================
@@ -219,6 +222,7 @@ __aicore__ inline void SparseFlashMlaCsa<SMLAT>::InitTilingData()
     constInfo.oriKvStride0 = tilingData->baseParams.oriKvStride0;
     constInfo.oriWinLeft = tilingData->baseParams.oriWinLeft;
     constInfo.oriWinRight = tilingData->baseParams.oriWinRight;
+    constInfo.oriWinFloorDims = tilingData->baseParams.oriWinFloorDims;
 
     constInfo.actualLenDimsQ = tilingData->baseParams.actualLenDimsQ;
     constInfo.actualLenDimsKV = tilingData->baseParams.actualLenDimsKV;
@@ -399,6 +403,18 @@ __aicore__ inline int32_t SparseFlashMlaCsa<SMLAT>::GetActualSeqLenCmpKV(uint32_
 }
 
 template <typename SMLAT>
+__aicore__ inline int32_t SparseFlashMlaCsa<SMLAT>::GetOriWinFloor(uint32_t bIdx, int32_t oriMaskRight)
+{
+    // ori_win_floor 未传入时返回 0, 行为与改动前完全一致
+    if (constInfo.oriWinFloorDims == 0) {
+        return 0;
+    }
+    // 绝对位置低于 floor 的 query 行, Min 使窗口退化为单个 key,
+    // 保证 oriS2Size >= 1, 不会下溢; 这些行的输出在语义上本就无意义
+    return Min(oriWinFloorGm.GetValue(bIdx), oriMaskRight);
+}
+
+template <typename SMLAT>
 __aicore__ inline int32_t SparseFlashMlaCsa<SMLAT>::GetCmpMaskS2Size(uint32_t bIdx, int32_t actualOriS2Size,
                                                                      int32_t actualCmpS2Size)
 {
@@ -478,7 +494,7 @@ __aicore__ inline void SparseFlashMlaCsa<SMLAT>::Init(
     __gm__ uint8_t *cuSeqlensQ, __gm__ uint8_t *cuSeqlensKV, __gm__ uint8_t *cuSeqlensCmpKV, __gm__ uint8_t *seqUsedQ,
     __gm__ uint8_t *seqUsedKV, __gm__ uint8_t *seqUsedCmpKV, __gm__ uint8_t *cmpResidualKV,
     __gm__ uint8_t *oriTopkLength, __gm__ uint8_t *cmpTopkLength, __gm__ uint8_t *sinks, __gm__ uint8_t *metadata,
-    __gm__ uint8_t *attentionOut, __gm__ uint8_t *softmaxLse, __gm__ uint8_t *workspace,
+    __gm__ uint8_t *oriWinFloor, __gm__ uint8_t *attentionOut, __gm__ uint8_t *softmaxLse, __gm__ uint8_t *workspace,
     const SparseFlashMlaTilingData *__restrict tiling, __gm__ uint8_t *gmTiling, TPipe *tPipe)
 {
     if ASCEND_IS_AIV {
@@ -513,6 +529,9 @@ __aicore__ inline void SparseFlashMlaCsa<SMLAT>::Init(
     cmpKvGm.SetGlobalBuffer((__gm__ KV_T *)cmpKV);
     if (constInfo.cmpResidualKVSize != 0) {
         cmpResidualKVGm.SetGlobalBuffer((__gm__ int32_t *)cmpResidualKV, constInfo.cmpResidualKVSize);
+    }
+    if (constInfo.oriWinFloorDims != 0) {
+        oriWinFloorGm.SetGlobalBuffer((__gm__ int32_t *)oriWinFloor, constInfo.oriWinFloorDims);
     }
 
     if (sinks != nullptr) {
@@ -822,9 +841,11 @@ __aicore__ inline void SparseFlashMlaCsa<SMLAT>::ProcessBalance()
             // 此处均为闭区间
             tempLoopInfo.oriMaskRight = tempLoopInfo.actOriS2Size - tempLoopInfo.actS1Size +
                                         static_cast<int32_t>(tempLoopInfo.s1EndIdx) + constInfo.oriWinRight;
-            tempLoopInfo.oriMaskLeft = Max(tempLoopInfo.actOriS2Size - tempLoopInfo.actS1Size +
-                                               static_cast<int32_t>(tempLoopInfo.s1EndIdx) - constInfo.oriWinLeft,
-                                           0);
+            tempLoopInfo.oriMaskLeft =
+                Max(Max(tempLoopInfo.actOriS2Size - tempLoopInfo.actS1Size +
+                            static_cast<int32_t>(tempLoopInfo.s1EndIdx) - constInfo.oriWinLeft,
+                        GetOriWinFloor(tempLoopInfo.bIdx, tempLoopInfo.oriMaskRight)),
+                    0);
             int32_t cmpMaskS2Size =
                 GetCmpMaskS2Size(tempLoopInfo.bIdx, tempLoopInfo.actOriS2Size, tempLoopInfo.actCmpS2Size);
             tempLoopInfo.cmpMaskRight = cmpMaskS2Size - tempLoopInfo.actS1Size;

@@ -88,7 +88,8 @@ public:
                                 __gm__ uint8_t *seqUsedQ, __gm__ uint8_t *seqUsedKV, __gm__ uint8_t *seqUsedCmpKV,
                                 __gm__ uint8_t *cmpResidualKV, __gm__ uint8_t *oriTopkLength,
                                 __gm__ uint8_t *cmpTopkLength, __gm__ uint8_t *sinks, __gm__ uint8_t *metadata,
-                                __gm__ uint8_t *attentionOut, __gm__ uint8_t *softmaxLse, __gm__ uint8_t *workspace,
+                                __gm__ uint8_t *oriWinFloor, __gm__ uint8_t *attentionOut,
+                                __gm__ uint8_t *softmaxLse, __gm__ uint8_t *workspace,
                                 const SparseFlashMlaTilingData *__restrict tiling, __gm__ uint8_t *gmTiling,
                                 TPipe *tPipe);
 
@@ -509,9 +510,10 @@ __aicore__ inline void SparseFlashMlaSwa<SMLAT>::Init(
     __gm__ uint8_t *cuSeqlensQ, __gm__ uint8_t *cuSeqlensKV, __gm__ uint8_t *cuSeqlensCmpKV, __gm__ uint8_t *seqUsedQ,
     __gm__ uint8_t *seqUsedKV, __gm__ uint8_t *seqUsedCmpKV, __gm__ uint8_t *cmpResidualKV,
     __gm__ uint8_t *oriTopkLength, __gm__ uint8_t *cmpTopkLength, __gm__ uint8_t *sinks, __gm__ uint8_t *metadata,
-    __gm__ uint8_t *attentionOut, __gm__ uint8_t *softmaxLse, __gm__ uint8_t *workspace,
+    __gm__ uint8_t *oriWinFloor, __gm__ uint8_t *attentionOut, __gm__ uint8_t *softmaxLse, __gm__ uint8_t *workspace,
     const SparseFlashMlaTilingData *__restrict tiling, __gm__ uint8_t *gmTiling, TPipe *tPipe)
 {
+    (void)oriWinFloor; // SWA 模板不使用 ori_win_floor
     if ASCEND_IS_AIV {
         tmpBlockIdx = GetBlockIdx(); // vec:0-47
         aiCoreIdx = tmpBlockIdx / 2;
