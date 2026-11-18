@@ -430,6 +430,9 @@ class AscendConfig:
             "enable_kv_nz": false,
             "enable_mc2_hierarchy_comm": false,
             "enable_dsa_cp": false,
+            "enable_decoder_swa_bounded_replay": false,
+            "decoder_swa_replay_mode": "mask",
+            "decoder_swa_replay_keep_tokens": 0,
             "sfa_dcp_force_tmajor_restore": false,
             "enable_force_eplb": false,
             "enable_pcp_o_proj_weight_sharding": true,
@@ -579,6 +582,18 @@ class AscendConfig:
     enable_kv_nz: bool = False
     enable_mc2_hierarchy_comm: bool = False  # deprecated, will be replaced by mc2_comm_alg = "hierarchy"
     enable_dsa_cp: bool = False
+    # DeepSeek-V4.1 Decoder SWA Bounded Replay. Under the CED architecture the
+    # decoder half reads its global KV from the boundary layer, so prefill only
+    # has to run those layers over a bounded tail of each prompt. "mask" keeps
+    # every query row and only narrows the sliding-window visibility: it saves
+    # no compute and exists as the bit-exact reference for "compact".
+    enable_decoder_swa_bounded_replay: bool = False
+    decoder_swa_replay_mode: Literal["mask", "compact"] = "mask"
+    # Retained tail length. 0 derives the floor:
+    #   sliding_window + max(1 + num_speculative_tokens, 1)
+    # The margin exists because a rejected speculative token rolls the sequence
+    # back, and every rolled-back position still needs a full window of keys.
+    decoder_swa_replay_keep_tokens: int = 0
     sfa_dcp_force_tmajor_restore: bool = False
     enable_force_eplb: bool = False
     enable_pcp_o_proj_weight_sharding: bool = True
@@ -676,6 +691,68 @@ class AscendConfig:
             self.enable_fused_mc2 = 1
         return self
 
+    def _derive_decoder_swa_bounded_replay(self, vc: VllmConfig) -> None:
+        """Gate and size DeepSeek-V4.1 Decoder SWA Bounded Replay.
+
+        Silently downgrades on models that do not have the CED topology, in
+        the same style as the enable_dsa_cp indexer probe. Everything the user
+        asked for explicitly and cannot have raises instead.
+        """
+        if not self.enable_decoder_swa_bounded_replay:
+            return
+
+        hf_text_config = getattr(getattr(vc, "model_config", None), "hf_text_config", None)
+        window = int(getattr(hf_text_config, "sliding_window", 0) or 0)
+        has_ced_topology = (
+            hf_text_config is not None
+            and getattr(hf_text_config, "candidate_source_layer_id", None) is not None
+            and getattr(hf_text_config, "kv_source_layer_ids", None)
+            and window > 0
+        )
+        if not has_ced_topology:
+            logger.warning(
+                "Disabling decoder SWA bounded replay: the model does not expose a "
+                "DeepSeek-V4.1 CED topology (kv_source_layer_ids / candidate_source_layer_id / "
+                "sliding_window)."
+            )
+            self.enable_decoder_swa_bounded_replay = False
+            return
+
+        if self.decoder_swa_replay_mode == "compact":
+            raise NotImplementedError(
+                "decoder_swa_replay_mode='compact' is not implemented yet. Use 'mask', which "
+                "narrows decoder sliding-window visibility without dropping query rows."
+            )
+
+        # A rejected speculative token rolls the sequence back; every rolled-back
+        # position still needs a full window, so the replayed tail must cover
+        # window + backtracking. Mirrors DeepInfer's
+        # TORCH_CHECK_GE(keep_tokens, window_size + max_backtracking_tokens).
+        num_spec = int(getattr(getattr(vc, "speculative_config", None), "num_speculative_tokens", 0) or 0)
+        keep_floor = window + max(num_spec + 1, 1)
+        if self.decoder_swa_replay_keep_tokens == 0:
+            self.decoder_swa_replay_keep_tokens = keep_floor
+        elif self.decoder_swa_replay_keep_tokens < keep_floor:
+            raise ValueError(
+                f"decoder_swa_replay_keep_tokens={self.decoder_swa_replay_keep_tokens} is below the "
+                f"floor {keep_floor} (sliding_window {window} + backtracking {max(num_spec + 1, 1)}). "
+                "A shorter tail silently truncates the window after a speculative rollback."
+            )
+
+        cache_config = getattr(vc, "cache_config", None)
+        if cache_config is not None and getattr(cache_config, "enable_prefix_caching", False):
+            raise ValueError(
+                "decoder SWA bounded replay cannot be combined with prefix caching yet: a prefix "
+                "hit leaves the decoder sliding-window KV unwritten below the replay tail. "
+                "Pass --no-enable-prefix-caching."
+            )
+        if int(getattr(hf_text_config, "vision_n_layers", 0) or 0) > 0:
+            raise ValueError(
+                "decoder SWA bounded replay does not support the vision path yet: image spans "
+                "widen the sliding window in-kernel, so the replay tail is not bounded by "
+                "sliding_window alone."
+            )
+
     # ---- derivations + cross-config downgrades/mutex ----
     # Business validation: invoked explicitly by init_ascend_config (NOT a
     # pydantic after-validator). Preserves the original __init__ ordering —
@@ -712,6 +789,7 @@ class AscendConfig:
                 "Remove enable_dsa_cp from additional_config and use "
                 "prefill context parallelism (PCP) instead."
             )
+        self._derive_decoder_swa_bounded_replay(vc)
         self._check_mooncake_c8_kv_cache_quant(vc)
 
         # profiling_chunk vs min_chunk clamp
