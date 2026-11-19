@@ -752,6 +752,16 @@ class AscendConfig:
                 "widen the sliding window in-kernel, so the replay tail is not bounded by "
                 "sliding_window alone."
             )
+        if get_current_hardware_profile().supports(HardwareCapability.DSV41_PACKED_CACHE):
+            # The packed-cache path calls mixed_quant_attention.qsmla, whose
+            # signature has no floor parameter, so the replay window would be
+            # silently ignored -- the config would claim bounded replay while
+            # the kernel kept attending the full sliding window. Refuse rather
+            # than run something that looks enabled and is not.
+            raise NotImplementedError(
+                "decoder SWA bounded replay requires the non-packed V4.1 attention path: "
+                "the packed-cache operator does not accept a sliding-window floor."
+            )
 
     # ---- derivations + cross-config downgrades/mutex ----
     # Business validation: invoked explicitly by init_ascend_config (NOT a
